@@ -3,7 +3,6 @@ from sklearn.preprocessing import normalize
 import numpy as np
 import os
 import pandas as pd
-import implicit
 import scipy.sparse as sps
 
 from scipy.sparse import dok_matrix
@@ -17,52 +16,31 @@ import itertools
 from itertools import combinations
 import datetime
 import time
+from numpy import inf
 
-
-mongo_ip = "127.0.0.1"
-mongo_port = 27018
-
-mc = MongoClient(host=mongo_ip, port=mongo_port,readPreference='primary') 
-db = mc.prod_data
 
 class Apriori():
 
 	def __init__(self,client,version):
-		self.client = client
-		self.version = version
+
 		self.all_prods = []
 
 	def load_data(self):
 
-		## loading last 100 days data from mongo baskets table
-		print('Running function to load data from mongo baskets table')
-		start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).replace(hour=0, microsecond=0, minute=0, second=0)
-		end_date = datetime.datetime.now().replace(hour=0, microsecond=0, minute=0, second=0)
+		## loading  baskets data
+		print('oading  baskets data')
 
-		data_cur = db.basket_products_data.find({'client':self.client,'date':{'$gte':start_date,'$lte':end_date}})
+		data = ps.read_csv('/Users/namrata/Documents/Github_data_codes/GroceryStoreDataSet.csv')
 
-		data = pd.DataFrame(
-		[
-			{
-				"date": item.get("date", ""),
-				"products_list": item.get("products_list",[]),
-				"action": item.get("action", ""),
-			} for item in data_cur
-		]
-		)
+		data.columns = ['products_list']
+		data['Basket_id'] = data.index
+		data['products_list']  = data['products_list'].str.split(',')
 
 		print('Number of basket entries loaded',len(data))
 
 		## getting the list of all unique products
 		unique_products = np.unique(list(itertools.chain.from_iterable(data['products_list'])))
 		
-		## error condition for WforWoman data
-		if self.client==1067:
-			unique_products=unique_products[unique_products!='w_']
-			data['products_list'] = [[j for j in x if j!='w_'] for x in data['products_list']]
-			data['len'] = [len(x) for x in data['products_list']]
-			data = data[data['len']>1]
-
 		print(data.head())
 
 		print('Number of unique products in all data',len(unique_products))
@@ -131,10 +109,11 @@ class Apriori():
 		lift = csr_matrix( (np.ravel(lift_values),l_ind,l_indptr) )	
 
 		print('Lift computed',lift.shape)
-		print('Lift computed',lift.toarray())		
+		# print('Lift computed',lift.toarray())		
 
 
 		# lift = confidence/support_col_wise
+		lift[lift == inf] = -1
 
 		self.lift = lift
 
@@ -143,62 +122,21 @@ class Apriori():
 		## sort indices of Lift matrix in desc order (best pair is max lift)
 		print('Running function to sort and insert results into final mongo table')
 		sorted_indices = np.argsort(-self.lift.toarray(),axis=1) ## do this 'X' rows at a time
-		## determine how many top N products to keep for each product
-			# max of either [100 or 1% of Total Unique Products ] 
-		top_N = max((int(0.1*self.length)),100)
+		sorted_lift = -np.sort(-lift.toarray(),axis=1)
+
+		
+		## how many top N products to keep for each product --> for now fix this to 10
+		top_N = 10
 
 		## filter output matrix (sorted indices as per lift value) for topN
-		if top_N<self.length:
-			sorted_indices = sorted_indices[:,:top_N]
-		else:
-			top_N = sorted_indices.shape[0]
+		sorted_indices = sorted_indices[:,:top_N]
+		sorted_lift = sorted_lift[:,:top_N]
 
 		## get actual product ids based on the top indices
 		actual_prods = self.all_prods[sorted_indices]
 
-		print('Results computed',actual_prods)
-
-		## insert all top N ranks into output mongo table
-		bulk = db.frequently_bought_together_products.initialize_unordered_bulk_op()
-
-		counter=0
-
-		updated_date = datetime.datetime.utcnow()
-		st = time.time()
-		for row_indx in range(len(self.all_prods)):
-
-			for pair_indx in range(top_N):
-
-				ori_product = self.all_prods[row_indx]
-				pair_prod = actual_prods[row_indx,pair_indx]
-				
-				if ori_product!=pair_prod:
-					bulk.find({'client':self.client,'productid':ori_product,'complementary_prod':pair_prod}).upsert().update(
-						{'$set':{
-								"client": self.client,
-								"productid": ori_product,
-								"complementary_prod": pair_prod,
-								"rank": pair_indx,
-								"version":self.version,
-								"UpdatedOn":updated_date
-								}}
-						)
-					counter=counter+1
-					if (counter % 1000 == 0):
-						print('data inserted',counter,'time',time.time()-st)
-						st=time.time()
-						bulk.execute()
-						bulk = db.frequently_bought_together_products.initialize_ordered_bulk_op()
-		if counter % 1000 != 0:
-			bulk.execute()
-
-		print('Mongo result insertion done')
-
-		## Del all entries smaller then updated_date
-
-		db.frequently_bought_together_products.delete_many({"UpdatedOn":{'$lt': updated_date}})
-
-		print('Mongo older result deletion done')
+		# print('Results computed',actual_prods)
+		return self.all_prods,actual_prods,sorted_lift
 
 
 	def Apriori_run(self):
@@ -209,8 +147,5 @@ class Apriori():
 		self.matrix_creation()
 		## computing all Apriori metrics -> Confidence and Lift
 		self.compute_metrics()
-		## Insert final topN ranking-results for each product in output mongo table
-		self.get_prod_pairs_and_insert()
-
-
-
+		## final topN ranking-results for each product
+		Order_of_products, Top_N_for_each_product, Lift_values_for_topN_products = self.get_prod_pairs_and_insert()
