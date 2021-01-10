@@ -1,5 +1,5 @@
 # Apriori
-A fast and memory efficient implementation of the Apriori Algorithm implementation from scratch
+A fast and memory efficient implementation of the Apriori Algorithm from scratch
 
 ### Dataset used
 - Currently the code is structed assuming input data is from the kaggle dataset of GroceryStoreData available at https://www.kaggle.com/shazadudwadia/supermarket/version/1
